@@ -18,6 +18,40 @@
       </article>
     </div>
 
+    <section class="cross-check-panel" data-testid="cross-check-panel">
+      <div class="cross-check-head">
+        <h3>重放目标核对（血缘边修复记录）</h3>
+        <button class="btn" type="button" data-testid="run-cross-check" @click="loadCrossCheck">核对重放目标</button>
+      </div>
+      <table v-if="crossChecks.length" class="data-table">
+        <thead>
+          <tr><th>死信记录</th><th>重放目标节点</th><th>来源批次</th><th>目标状态</th><th>修复批次</th><th>替代来源</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in crossChecks" :key="String(item.dead_letter_id)"
+              :data-testid="`cross-row-${item.dead_letter_id}`" :data-blocked="String(item.blocked)">
+            <td>{{ item.record_code }}</td>
+            <td>{{ item.replay_target }}</td>
+            <td>{{ item.source_batch ?? '—' }}</td>
+            <td>
+              <span :class="['status-tag', item.blocked ? 'blocked' : 'valid']">
+                {{ item.target_deactivated ? '已停用' : (item.blocked ? '已撤下' : '有效') }}
+              </span>
+            </td>
+            <td>{{ item.repair_batch_id ?? '—' }}</td>
+            <td>{{ item.replacement_node ?? '—' }}</td>
+            <td>
+              <button v-if="item.blocked" class="link" type="button"
+                      :data-testid="`redirect-${item.dead_letter_id}`"
+                      @click="runRedirect(item.dead_letter_id)">改投重放</button>
+              <span v-else class="muted">可正常重放</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="page-desc">点击「核对重放目标」读取血缘边修复记录，避免向已停用/已撤下的失效转换节点重放。</p>
+    </section>
+
     <form class="filter-bar" @submit.prevent="reload">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
@@ -100,6 +134,17 @@ const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+type CrossCheck = {
+  dead_letter_id: number
+  record_code: string
+  replay_target: string
+  source_batch: string | null
+  target_deactivated: boolean
+  blocked: boolean
+  repair_batch_id: string | null
+  replacement_node: string | null
+}
+const crossChecks = ref<CrossCheck[]>([])
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
@@ -159,12 +204,43 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('死信处理动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || '死信处理动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '死信处理操作失败'
+  }
+}
+
+async function loadCrossCheck() {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/replay-cross-check`)
+    if (!response.ok) throw new Error('重放目标核对失败')
+    const payload = await response.json()
+    crossChecks.value = payload.items ?? []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '重放目标核对失败'
+  }
+}
+
+async function runRedirect(deadLetterId: number) {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/${deadLetterId}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ action: '改投重放' }),
+    })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || '改投重放未生效')
+    }
+    await reload()
+    await loadCrossCheck()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '改投重放失败'
   }
 }
 
@@ -179,6 +255,7 @@ async function reload() {
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    await loadCrossCheck()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '死信处理列表读取失败'
   }
@@ -186,3 +263,12 @@ async function reload() {
 
 onMounted(reload)
 </script>
+<style scoped>
+.cross-check-panel { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: #fafbfc; }
+.cross-check-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.cross-check-head h3 { margin: 0; font-size: 15px; }
+.status-tag { padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+.status-tag.blocked { background: #fee2e2; color: #b91c1c; }
+.status-tag.valid { background: #d1fae5; color: #065f46; }
+.muted { color: var(--muted); font-size: 12px; }
+</style>

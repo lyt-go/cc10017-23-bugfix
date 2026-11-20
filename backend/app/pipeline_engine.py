@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.store import store
+from app.services.stream_lineage import StreamLineageService
 
 
 class PipelineEngine:
@@ -527,21 +528,28 @@ class PipelineEngine:
                     "status": row.get("status"),
                 })
 
-        # 构建边：基于流式血缘记录
+        # 构建边：基于流式血缘记录（已停用转换的失效边与修复撤下边不进入有效图）
+        lineage_service = StreamLineageService()
+        inactive_edge_keys = lineage_service._inactive_edge_keys()
         for row in store.rows("stream_lineage"):
-            if row.get("status") == "已生效":
-                upstream_topic = row.get("上游主题")
-                downstream_table = row.get("下游表名")
-                # 查找对应节点id
-                upstream_node = next((n for n in nodes if n["name"] == upstream_topic), None)
-                downstream_node = next((n for n in nodes if n["name"] == downstream_table), None)
-                if upstream_node and downstream_node:
-                    edges.append({
-                        "from": upstream_node["id"],
-                        "to": downstream_node["id"],
-                        "label": row.get("转换节点", "transform"),
-                        "field_map": row.get("字段映射"),
-                    })
+            if row.get("status") != "已生效":
+                continue
+            upstream_topic = row.get("上游主题")
+            downstream_table = row.get("下游表名")
+            transform_node = row.get("转换节点", "transform")
+            edge_unique = f"{upstream_topic}>>{transform_node}>>{downstream_table}"
+            if edge_unique in inactive_edge_keys:
+                continue
+            # 查找对应节点id
+            upstream_node = next((n for n in nodes if n["name"] == upstream_topic), None)
+            downstream_node = next((n for n in nodes if n["name"] == downstream_table), None)
+            if upstream_node and downstream_node:
+                edges.append({
+                    "from": upstream_node["id"],
+                    "to": downstream_node["id"],
+                    "label": transform_node,
+                    "field_map": row.get("字段映射"),
+                })
 
         # 补充边：topic -> kafka -> flink
         topic_nodes = {n["name"]: n["id"] for n in nodes if n["type"] == "topic"}
@@ -586,6 +594,9 @@ class PipelineEngine:
             "compact_results": len(store.rows("compact_results")),
             "ttl_applied_log": len(store.rows("ttl_applied_log")),
             "realtime_metric_results": len(store.rows("realtime_metric_results")),
+            "lineage_edge_repairs": len([
+                r for r in store.rows("lineage_edge_repairs") if not r.get("batch_header")
+            ]),
         }
 
         return {

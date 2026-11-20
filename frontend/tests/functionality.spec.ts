@@ -554,6 +554,72 @@ test('DAG拓扑模块：节点渲染、详情、动作、导出', async ({ page 
   expect(browserErrors).toEqual([])
 })
 
+test('流式血缘：下线节点定位与血缘边修复记录全流程', async ({ page }) => {
+  test.setTimeout(300_000)
+  const browserErrors: string[] = []
+  page.on('pageerror', e => browserErrors.push(e.message))
+  page.on('response', r => { if (r.url().includes('/api/') && r.status()>=400) browserErrors.push(`${r.status()} ${r.url()}`) })
+
+  await page.goto('/stream_lineage')
+  await page.waitForTimeout(3000)
+
+  // 下线转换节点仍可在图上定位，但有效边不指向它
+  await page.getByTestId('locate-offline').click()
+  await expect(page.getByTestId('dag-detail')).toBeVisible()
+  const offlineNode = page.locator('g.dag-node.offline')
+  await expect(offlineNode.first()).toBeVisible()
+
+  // 生成血缘边修复记录：保留失效边与替代来源
+  const rowCountBefore = await page.getByTestId(/repair-row-/).count()
+  await page.getByTestId('generate-repair').click()
+  await expect(page.getByTestId('repair-message')).toBeVisible()
+  await expect.poll(async () => page.getByTestId(/repair-row-/).count()).toBeGreaterThan(rowCountBefore)
+
+  // 修复记录同时展示旧边版本与替代节点
+  const firstRepair = page.locator('[data-testid^="repair-row-"]').first()
+  await expect(firstRepair).toContainText('edge-v1')
+  await expect(firstRepair).toContainText('flink-window-agg-v2')
+
+  // 重复生成不产生重复修复项
+  const rowsAfterFirst = await page.getByTestId(/repair-row-/).count()
+  await page.getByTestId('generate-repair').click()
+  await page.waitForTimeout(1000)
+  expect(await page.getByTestId(/repair-row-/).count()).toBe(rowsAfterFirst)
+
+  // 页脚统计与失效边渲染
+  await expect(page.locator('.page-foot')).toContainText('条失效边')
+  expect(browserErrors).toEqual([])
+})
+
+test('死信处理：重放目标核对与改投重放', async ({ page }) => {
+  test.setTimeout(300_000)
+  const browserErrors: string[] = []
+  page.on('pageerror', e => browserErrors.push(e.message))
+  page.on('response', r => { if (r.url().includes('/api/') && r.status()>=400) browserErrors.push(`${r.status()} ${r.url()}`) })
+
+  // 先在流式血缘页生成修复记录，建立失效边与替代来源
+  await page.goto('/stream_lineage')
+  await page.waitForTimeout(2000)
+  await page.getByTestId('generate-repair').click()
+  await page.waitForTimeout(1000)
+
+  await page.goto('/dead_letter')
+  await page.waitForTimeout(2000)
+  await expect(page.getByTestId('cross-check-panel')).toBeVisible()
+  await page.getByTestId('run-cross-check').click()
+  const crossRows = page.getByTestId(/cross-row-/)
+  await expect.poll(async () => crossRows.count()).toBeGreaterThan(0)
+
+  // 被拦截的记录提供改投重放入路；无拦截记录时面板仍正常渲染
+  const blockedRows = page.locator('[data-testid^="cross-row-"][data-blocked="true"]')
+  const blockedCount = await blockedRows.count()
+  if (blockedCount > 0) {
+    await blockedRows.first().getByRole('button', { name: '改投重放' }).click()
+    await page.waitForTimeout(1000)
+  }
+  expect(browserErrors).toEqual([])
+})
+
 test('时间线模块：甘特条渲染、日期筛选、日志查看、登记', async ({ page }) => {
   test.setTimeout(300_000)
   const browserErrors: string[] = []

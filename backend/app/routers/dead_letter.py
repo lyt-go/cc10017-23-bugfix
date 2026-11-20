@@ -41,6 +41,12 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/replay-cross-check")
+def replay_cross_check() -> dict[str, Any]:
+    """核对血缘边修复记录：标识重放目标已失效的死信，避免向失效节点重放。"""
+    return service.replay_cross_check()
+
+
 @router.get("/export")
 def export_entries(
     request: Request,

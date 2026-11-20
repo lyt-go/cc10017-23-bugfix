@@ -43,8 +43,13 @@ class Store:
             "quality_inspection_results", "materialized_refresh_log",
             "sink_dispatch_queue", "compact_results",
             "ttl_applied_log", "realtime_metric_results",
+            "lineage_edge_repairs",
         ]
-        artifact_counts = {n: len(self.rows(n)) for n in artifact_names}
+        artifact_counts = {
+            n: (len([r for r in self.rows(n) if not r.get("batch_header")])
+                if n == "lineage_edge_repairs" else len(self.rows(n)))
+            for n in artifact_names
+        }
         total_artifacts = sum(artifact_counts.values())
 
         cards = [
